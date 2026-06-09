@@ -153,3 +153,74 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  verify-1c:
+    name: Verify database layer (1c)
+    runs-on: ubuntu-latest
+    needs: [verify, verify-1b]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create .env from .env.example
+        run: cp .env.example .env
+
+      - name: Build and start containers
+        run: docker compose up -d --build
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose exec -T postgres \
+              pg_isready -U chef -d chef_agent > /dev/null 2>&1; then
+              echo "PostgreSQL ready."; break
+            fi
+            echo "  attempt $i/30 — sleeping 1s"; sleep 1
+          done
+
+      - name: Run Alembic migrations
+        run: docker compose exec -T api alembic upgrade head
+
+      - name: "[1/3] All four tables exist"
+        run: |
+          TABLES=$(docker compose exec -T postgres psql -U chef -d chef_agent \
+            -t -c "SELECT tablename FROM pg_tables WHERE schemaname='public' \
+            ORDER BY tablename;")
+          echo "Tables found: $TABLES"
+          for TABLE in sessions detection_logs generation_logs prompt_versions; do
+            if echo "$TABLES" | grep -q "$TABLE"; then
+              echo "  ✓ $TABLE"
+            else
+              echo "  ✗ $TABLE MISSING"
+              exit 1
+            fi
+          done
+          echo "PASS"
+
+      - name: "[2/3] sessions table has expected columns"
+        run: |
+          COLS=$(docker compose exec -T postgres psql -U chef -d chef_agent \
+            -t -c "SELECT column_name FROM information_schema.columns \
+            WHERE table_name='sessions' ORDER BY column_name;")
+          echo "Columns: $COLS"
+          for COL in id created_at; do
+            echo "$COLS" | grep -q "$COL" && echo "  ✓ $COL" || \
+              (echo "  ✗ $COL MISSING" && exit 1)
+          done
+          echo "PASS"
+
+      - name: "[3/3] API starts and DB connection logged"
+        run: |
+          LOGS=$(docker compose logs api 2>&1)
+          echo "$LOGS" | grep -qi "postgresql" && \
+            echo "PASS — DB connection logged on startup" || \
+            (echo "ERROR: no PostgreSQL log line found" && exit 1)
+
+      - name: Print container logs (on failure)
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
