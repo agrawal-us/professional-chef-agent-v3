@@ -1,0 +1,87 @@
+name: Iteration 1a — Docker Foundation Verify
+
+on:
+  push:
+    branches:
+      - claude/chef-agent-docker-setup-crljfi
+  pull_request:
+    branches:
+      - claude/chef-agent-docker-setup-crljfi
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify three containers healthy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create .env from .env.example
+        run: cp .env.example .env
+
+      - name: Build and start containers
+        run: docker compose up -d --build
+
+      - name: Wait for API to be ready
+        run: |
+          echo "Waiting for API on port 8000..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/ > /dev/null 2>&1; then
+              echo "API is ready."
+              break
+            fi
+            echo "  attempt $i/30 — not ready yet, sleeping 1s"
+            sleep 1
+          done
+
+      - name: "[1/4] All containers running"
+        run: |
+          docker compose ps
+          # Fail if any service is not running/healthy
+          if docker compose ps --format json | grep -qE '"Status":"(exited|dead|removing)"'; then
+            echo "ERROR: one or more containers are not running"
+            exit 1
+          fi
+
+      - name: "[2/4] API health check"
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8000/)
+          echo "Response: $RESPONSE"
+          EXPECTED='{"status":"ok","message":"Professional Chef Agent API"}'
+          if [ "$RESPONSE" != "$EXPECTED" ]; then
+            echo "ERROR: unexpected response"
+            echo "  got:      $RESPONSE"
+            echo "  expected: $EXPECTED"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: "[3/4] PostgreSQL accepting connections"
+        run: |
+          OUTPUT=$(docker compose exec -T postgres pg_isready -U chef -d chef_agent)
+          echo "$OUTPUT"
+          if ! echo "$OUTPUT" | grep -q "accepting connections"; then
+            echo "ERROR: pg_isready did not return 'accepting connections'"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: "[4/4] Redis responds to PING"
+        run: |
+          OUTPUT=$(docker compose exec -T redis redis-cli ping)
+          echo "$OUTPUT"
+          if [ "$OUTPUT" != "PONG" ]; then
+            echo "ERROR: expected PONG, got: $OUTPUT"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Print container logs (on failure)
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
