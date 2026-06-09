@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.database import check_connection, close_db
 from app.middleware.request_id import RequestIDMiddleware
 
 
@@ -31,11 +32,19 @@ def make_envelope(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"Starting Professional Chef Agent API")
+    print("Starting Professional Chef Agent API")
     print(f"  Environment : {settings.environment}")
     print(f"  Version     : {settings.api_version}")
-    print(f"  LLM provider: {settings.llm_provider}")
+
+    db_status = await check_connection()
+    if db_status["status"] == "connected":
+        print(f"  PostgreSQL  : connected ({db_status['latency_ms']}ms)")
+    else:
+        print(f"  PostgreSQL  : {db_status['status']} — {db_status.get('error')}")
+
     yield
+
+    await close_db()
     print("Shutting down Professional Chef Agent API")
 
 
