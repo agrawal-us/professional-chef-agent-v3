@@ -1,12 +1,12 @@
-name: Iteration 1a — Docker Foundation Verify
+name: Backend CI — Iteration 1a + 1b
 
 on:
   push:
     branches:
-      - claude/chef-agent-docker-setup-crljfi
+      - 'claude/**'
   pull_request:
     branches:
-      - claude/chef-agent-docker-setup-crljfi
+      - main
   workflow_dispatch:
 
 jobs:
@@ -49,14 +49,12 @@ jobs:
         run: |
           RESPONSE=$(curl -sf http://localhost:8000/)
           echo "Response: $RESPONSE"
-          EXPECTED='{"status":"ok","message":"Professional Chef Agent API"}'
-          if [ "$RESPONSE" != "$EXPECTED" ]; then
-            echo "ERROR: unexpected response"
-            echo "  got:      $RESPONSE"
-            echo "  expected: $EXPECTED"
-            exit 1
-          fi
-          echo "PASS"
+          python3 -c "
+          import sys, json
+          r = json.loads('$RESPONSE')
+          assert r.get('success') == True or 'status' in str(r), f'unexpected: {r}'
+          print('PASS')
+          "
 
       - name: "[3/4] PostgreSQL accepting connections"
         run: |
@@ -77,6 +75,76 @@ jobs:
             exit 1
           fi
           echo "PASS"
+
+      - name: Print container logs (on failure)
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  verify-1b:
+    name: Verify FastAPI skeleton (1b)
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create .env from .env.example
+        run: cp .env.example .env
+
+      - name: Build and start containers
+        run: docker compose up -d --build
+
+      - name: Wait for API to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/ > /dev/null 2>&1; then
+              echo "API is ready."; break
+            fi
+            echo "  attempt $i/30 — sleeping 1s"; sleep 1
+          done
+
+      - name: "[1/3] Root route returns standard envelope"
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8000/)
+          echo "Response: $RESPONSE"
+          python3 -c "
+          import sys, json
+          r = json.loads('$RESPONSE')
+          assert r['success'] == True
+          assert 'data' in r and 'meta' in r and 'error' in r
+          assert r['data']['health'] == '/api/v1/health'
+          assert 'request_id' in r['meta']
+          assert 'latency_ms' in r['meta']
+          print('PASS')
+          "
+
+      - name: "[2/3] X-Request-ID header present on every response"
+        run: |
+          HEADER=$(curl -sI http://localhost:8000/ | grep -i x-request-id)
+          echo "$HEADER"
+          [ -n "$HEADER" ] && echo "PASS" || (echo "ERROR: missing X-Request-ID" && exit 1)
+
+      - name: "[3/3] Unknown route returns 404 with envelope"
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8000/does-not-exist)
+          STATUS=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+          echo "Status: $STATUS"
+          echo "Body: $BODY"
+          [ "$STATUS" = "404" ] || (echo "ERROR: expected 404, got $STATUS" && exit 1)
+          python3 -c "
+          import json, sys
+          r = json.loads('$BODY')
+          assert r['success'] == False,       f'expected success=false, got {r[\"success\"]}'
+          assert r['error']['code'] == 'NOT_FOUND', f'expected NOT_FOUND, got {r[\"error\"][\"code\"]}'
+          assert 'request_id' in r['meta'],   'missing meta.request_id'
+          print('PASS')
+          "
 
       - name: Print container logs (on failure)
         if: failure()
