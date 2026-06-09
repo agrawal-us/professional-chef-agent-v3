@@ -86,6 +86,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("deprecated_date", sa.DateTime(timezone=True)),
+        sa.UniqueConstraint("prompt_name", "version", name="uq_prompt_versions_name_version"),
     )
 
 

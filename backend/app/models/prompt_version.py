@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, Float, func
+from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, Float, UniqueConstraint, func
 
 from app.database import Base
 
@@ -20,3 +20,7 @@ class PromptVersion(Base):
         nullable=False,
     )
     deprecated_date = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("prompt_name", "version", name="uq_prompt_versions_name_version"),
+    )
