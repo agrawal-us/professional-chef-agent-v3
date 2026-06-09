@@ -45,14 +45,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# RequestID must be registered before CORS
-app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIDMiddleware)  # outermost — wraps CORS so all responses get X-Request-ID
 
 
 @app.exception_handler(404)
@@ -92,6 +91,26 @@ async def internal_error_handler(request: Request, exc):
                 "details": None,
             },
         ),
+    )
+
+
+@app.get("/api/v1/health")
+async def health(request: Request):
+    rid = getattr(request.state, "request_id", "unknown")
+    st = getattr(request.state, "start_time", time.monotonic())
+    return make_envelope(
+        data={
+            "status": "healthy",
+            "version": settings.api_version,
+            "dependencies": {
+                "postgres": {"status": "unchecked"},
+                "redis": {"status": "unchecked"},
+                "llm": {"status": "unchecked"},
+                "openai": {"status": "unchecked"},
+            },
+        },
+        request_id=rid,
+        start_time=st,
     )
 
 
