@@ -131,10 +131,20 @@ jobs:
 
       - name: "[3/3] Unknown route returns 404 with envelope"
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            http://localhost:8000/does-not-exist)
-          [ "$STATUS" = "404" ] && echo "PASS" || \
-            (echo "ERROR: expected 404, got $STATUS" && exit 1)
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8000/does-not-exist)
+          STATUS=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+          echo "Status: $STATUS"
+          echo "Body: $BODY"
+          [ "$STATUS" = "404" ] || (echo "ERROR: expected 404, got $STATUS" && exit 1)
+          python3 -c "
+          import json, sys
+          r = json.loads('$BODY')
+          assert r['success'] == False,       f'expected success=false, got {r[\"success\"]}'
+          assert r['error']['code'] == 'NOT_FOUND', f'expected NOT_FOUND, got {r[\"error\"][\"code\"]}'
+          assert 'request_id' in r['meta'],   'missing meta.request_id'
+          print('PASS')
+          "
 
       - name: Print container logs (on failure)
         if: failure()
